@@ -1,0 +1,105 @@
+apiVersion: k0sctl.k0sproject.io/v1beta1
+kind: Cluster
+metadata:
+  name: k0s-cluster
+  user: admin
+spec:
+  hosts:
+  - openSSH:
+      address: test-web-1
+    role: controller
+    privateInterface: enp7s0
+    files:
+      - src: ./manifests/hcloud.yaml
+        dst: /var/lib/k0s/manifests/hcloud/secret.yaml
+  - openSSH:
+      address: test-k8s-w1
+    privateInterface: enp7s0
+    installFlags:
+      - --enable-cloud-provider
+      - --kubelet-extra-args="--cloud-provider=external"
+    role: worker
+  options:
+    wait:
+      enabled: true
+    drain:
+      enabled: true
+      gracePeriod: 2m0s
+      timeout: 5m0s
+      force: true
+      ignoreDaemonSets: true
+      deleteEmptyDirData: true
+      podSelector: ""
+      skipWaitForDeleteTimeout: 0s
+    concurrency:
+      limit: 30
+      workerDisruptionPercent: 10
+      uploads: 5
+  k0s:
+    config:
+      apiVersion: k0s.k0sproject.io/v1beta1
+      kind: ClusterConfig
+      metadata:
+        name: k0s-cluster
+      spec:
+        api:
+          externalAddress: ${kube_external_ip}
+        storage:
+          type: kine
+          kine:
+            dataSource: "sqlite:///var/lib/k0s/kine.db?cache=shared&_journal=WAL&_timeout=10000"
+        controllerManager:
+          extraArgs:
+            node-cidr-mask-size: "${kube_network_node_prefix}"
+        network:
+          podCIDR: ${kube_pods_subnet}
+          serviceCIDR: ${kube_service_addresses}
+          provider: kuberouter
+        extensions:
+          helm:
+            repositories:
+            - name: hcloud
+              url: https://charts.hetzner.cloud
+            - name: traefik
+              url: https://traefik.github.io/charts
+            charts:
+            - name: hccm
+              chartname: hcloud/hcloud-cloud-controller-manager
+              namespace: kube-system
+              values: |
+                networking:
+                  enabled: "true"
+                  clusterCIDR: "${kube_pods_subnet}"
+                monitoring:
+                  enabled: "false"
+                additionalTolerations:
+                  - key: "node.kubernetes.io/not-ready"
+                    effect: "NoSchedule"
+            - name: hcloud-csi
+              chartname: hcloud/hcloud-csi
+              namespace: kube-system
+              values: |
+                node:
+                  kubeletDir: /var/lib/k0s/kubelet
+            - name: traefik
+              chartname: traefik/traefik
+              namespace: kube-system
+              values: |
+                ingressRoute:
+                  dashboard:
+                    enabled: true
+                    matchRule: "Host(`${traefik_host}`)"
+                    entryPoints: ["web"]
+                ports:
+                  web:
+                    nodePort: 30080
+                    proxyProtocol:
+                      trustedIPs: 
+                        - "${hcloud_network_cidr}"
+                  websecure:
+                    nodePort: 30443
+                    proxyProtocol:
+                      trustedIPs: 
+                        - "${hcloud_network_cidr}"
+                service:
+                  type: NodePort
